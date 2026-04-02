@@ -1,0 +1,86 @@
+experiment:
+  name: msd_guided_diffusion_behavior_prior
+  seed: 7
+  device: auto
+
+method:
+  variant: guided_diffusion_behavior_prior  # choices: cost_aware, cost_conditioned_prior, behavior_prior, diffusion_behavior_prior, guided_diffusion_behavior_prior, guided_diffusion_behavior_prior
+
+environment:
+  m: 1.0
+  k_s: 1.0
+  c: 0.2
+  dt: 0.05
+  horizon: 30
+  episode_len: 30
+  initial_state:
+    position: [-2.0, 2.0]
+    velocity: [-2.0, 2.0]
+
+cost:
+  q_pos_range: [0.5, 20.0]
+  q_vel_range: [0.05, 5.0]
+  r_u_range: [0.01, 1.0]
+
+dataset:
+  output_dir: artifacts/datasets/msd_default
+  num_trajectories: 50000
+  split_fractions:
+    train: 0.7
+    val: 0.15
+    test: 0.15
+  mixture:
+    oracle_fraction: 0.1
+    pd_fraction: 0.1
+    random_fraction: 0.8
+  oracle_action_noise_std: 0.05
+  pd:
+    kp_range: [0.5, 4.0]
+    kd_range: [0.2, 2.5]
+    action_noise_std: 0.1
+  random_open_loop:
+    action_std: 1.0
+    smoothing: 0.85
+
+model:
+  eps_dim: 32
+  hidden_dim: 256
+  num_blocks: 6
+
+training:
+  output_dir: artifacts/runs/new_guided_diffusion_H30_64
+  batch_size: 128
+  positives_k: 256
+  negatives_m: 32
+  lr: 0.0002
+  weight_decay: 0.0001
+  beta_max: 0.0
+  beta_ramp_fraction: 0.0
+  max_epochs: 500
+  patience: 10000000
+  grad_clip_norm: 1.0
+  validation_batches: 8
+  context_temperature: 2.0
+  kernel: rbf
+  kernel_temperatures: [5.0]
+  cost_normalization: zscore
+  cost_clip: 5.0
+
+diffusion:
+  time_embed_dim: 64
+  num_diffusion_steps: 64
+  beta_start: 0.0001
+  beta_end: 0.02
+  sample_steps: 16
+  clip_sample: 5.0
+  guidance_scale: 0.25
+  guidance_norm: true
+  guidance_max_step: 0.0
+  guidance_start_fraction: 0.0
+  guidance_end_fraction: 1.0
+
+evaluation:
+  output_dir: artifacts/eval/new_guided_diffusion_H30_64
+  num_episodes: 100
+  m_plan: 5
+  num_rollout_plots: 3
