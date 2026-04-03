@@ -71,7 +71,7 @@ diffusion:
   num_diffusion_steps: 64
   beta_start: 0.0001
   beta_end: 0.02
-  sample_steps: 16
+  sample_steps: 16 #not used
   clip_sample: 5.0
   guidance_scale: 0.25
   guidance_norm: true
