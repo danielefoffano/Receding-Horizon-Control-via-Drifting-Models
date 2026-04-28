@@ -2,7 +2,7 @@
 
 This repository implements four offline trajectory-generation baselines for the mass-spring-damper system under unknown dynamics:
 
-1. **cost_aware**: Alternative A from the paper. The generator is conditioned on `(x0, omega)` and the positive field uses exponential cost tilting.
+1. **cost_aware**: The generator is conditioned on `(x0, omega)` and the positive field uses exponential cost tilting.
 2. **behavior_prior**: the generator is conditioned only on `x0`; the query cost `omega` is used only at evaluation time to score sampled trajectories.
 3. **diffusion_behavior_prior**: a diffusion baseline conditioned only on `x0`; it does **not** see `omega` during training and uses unguided diffusion sampling at test time before scoring candidates with the query cost.
 4. **guided_diffusion_behavior_prior**: the same `x0`-conditioned diffusion prior, but sampled with Diffuser-style reward guidance using the closed-form gradient of the cumulative reward (equivalently, negative cost) with respect to the predicted denoised trajectory.
