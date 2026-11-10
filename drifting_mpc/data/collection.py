@@ -10,7 +10,7 @@ from drifting_mpc.control.oracle import OracleLQRController
 from drifting_mpc.data.costs import sample_omega, trajectory_cost_np
 from drifting_mpc.data.dataset import OfflineTrajectorySplit, TrajectoryNormalizer, save_manifest
 from drifting_mpc.data.trajectory import encode_trajectory
-from drifting_mpc.envs.mass_spring_damper import MassSpringDamperEnv, build_msd_spec
+from drifting_mpc.envs.registry import build_spec, make_env, make_reference_controller
 
 CONTROLLER_NAMES = {
     0: "oracle_noisy",
@@ -31,7 +31,7 @@ class CollectedTrajectory:
 
 
 def _rollout_policy(
-    env: MassSpringDamperEnv,
+    env,
     x0: np.ndarray,
     policy,
     episode_len: int,
@@ -47,14 +47,24 @@ def _rollout_policy(
     return np.stack(states), np.stack(actions)
 
 
-def _sample_pd_policy(config: dict, rng: np.random.Generator):
+def _sample_pd_policy(config: dict, rng: np.random.Generator, spec=None):
+    """Random linear state-feedback behaviour policy, u = -K x.
+
+    For the 2-state mass-spring-damper this is exactly the original PD law
+    (K = [kp, kd]); for higher-dimensional systems the gain row is drawn from
+    the same ranges, alternating position-like and rate-like entries.
+    """
     pd_cfg = config["dataset"]["pd"]
-    kp = float(rng.uniform(*pd_cfg["kp_range"]))
-    kd = float(rng.uniform(*pd_cfg["kd_range"]))
     action_noise_std = float(pd_cfg["action_noise_std"])
+    state_dim = 2 if spec is None else int(spec.state_dim)
+    action_dim = 1 if spec is None else int(spec.action_dim)
+    gains = np.zeros((action_dim, state_dim), dtype=np.float32)
+    for i in range(state_dim):
+        rng_key = "kp_range" if i % 2 == 0 else "kd_range"
+        gains[:, i] = rng.uniform(*pd_cfg[rng_key], size=action_dim)
 
     def policy(_: int, state: np.ndarray) -> np.ndarray:
-        action = np.array([-(kp * state[0] + kd * state[1])], dtype=np.float32)
+        action = -(gains @ np.asarray(state, dtype=np.float32)).astype(np.float32)
         if action_noise_std > 0.0:
             action = (action + rng.normal(0.0, action_noise_std, size=action.shape)).astype(np.float32)
         return action
@@ -75,7 +85,7 @@ def _sample_random_open_loop(spec, config: dict, rng: np.random.Generator) -> np
 
 
 def _collect_single_trajectory(
-    env: MassSpringDamperEnv,
+    env,
     oracle: OracleLQRController,
     x0: np.ndarray,
     omega: np.ndarray,
@@ -92,7 +102,7 @@ def _collect_single_trajectory(
             rng=rng,
         )
     elif controller_id == 1:
-        policy = _sample_pd_policy(config, rng)
+        policy = _sample_pd_policy(config, rng, env.spec)
         states, actions = _rollout_policy(env, x0, policy, env.spec.episode_len)
     elif controller_id == 2:
         open_loop_actions = _sample_random_open_loop(env.spec, config, rng)
@@ -131,9 +141,9 @@ def collect_offline_dataset(config: dict, dataset_dir: str | Path | None = None)
     target_dir.mkdir(parents=True, exist_ok=True)
 
     rng = np.random.default_rng(int(config["experiment"]["seed"]))
-    spec = build_msd_spec(config)
-    env = MassSpringDamperEnv(spec)
-    oracle = OracleLQRController(spec)
+    spec = build_spec(config)
+    env = make_env(config, spec)
+    oracle = make_reference_controller(config, spec, make_env(config, spec))
 
     mixture_cfg = dataset_cfg["mixture"]
     controller_probs = np.asarray(

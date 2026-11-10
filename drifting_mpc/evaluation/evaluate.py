@@ -9,10 +9,9 @@ import numpy as np
 import torch
 
 from drifting_mpc.config import dump_config
-from drifting_mpc.control.oracle import OracleLQRController
 from drifting_mpc.data.costs import trajectory_cost_np
 from drifting_mpc.data.dataset import load_split
-from drifting_mpc.envs.mass_spring_damper import MassSpringDamperEnv, build_msd_spec
+from drifting_mpc.envs.registry import build_spec, make_env, make_reference_controller
 from drifting_mpc.evaluation.policy import LearnedMPCPlanner, load_planner_from_checkpoint
 from drifting_mpc.methods import get_method_spec
 from drifting_mpc.utils.plotting import (
@@ -41,7 +40,7 @@ def _maybe_synchronize(device: torch.device | str | None) -> None:
 
 
 def _rollout_learned(
-    env: MassSpringDamperEnv,
+    env,
     planner: LearnedMPCPlanner,
     x0: np.ndarray,
     omega: np.ndarray,
@@ -62,8 +61,8 @@ def _rollout_learned(
 
 
 def _rollout_oracle(
-    env: MassSpringDamperEnv,
-    oracle: OracleLQRController,
+    env,
+    oracle,
     x0: np.ndarray,
     omega: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, float]:
@@ -108,7 +107,7 @@ def evaluate_vs_oracle(
     planner, ckpt_config = load_planner_from_checkpoint(ckpt_path, device=device)
     if config is None:
         config = ckpt_config
-    spec = build_msd_spec(config)
+    spec = build_spec(config)
     method = get_method_spec(ckpt_config)
     dataset_root = Path(dataset_dir or config["dataset"]["output_dir"]).expanduser().resolve()
     test_split = load_split(dataset_root / "test.npz")
@@ -119,9 +118,9 @@ def evaluate_vs_oracle(
     num_episodes = min(int(config["evaluation"]["num_episodes"]), test_split.size)
     episode_indices = rng.choice(test_split.size, size=num_episodes, replace=False)
 
-    learned_env = MassSpringDamperEnv(spec)
-    oracle_env = MassSpringDamperEnv(spec)
-    oracle = OracleLQRController(spec)
+    learned_env = make_env(config, spec)
+    oracle_env = make_env(config, spec)
+    oracle = make_reference_controller(config, spec, make_env(config, spec))
 
     learned_costs: list[float] = []
     oracle_costs: list[float] = []
@@ -150,9 +149,7 @@ def evaluate_vs_oracle(
                 "episode": float(episode_id),
                 "x0_position": float(x0[0]),
                 "x0_velocity": float(x0[1]),
-                "q_pos": float(omega[0]),
-                "q_vel": float(omega[1]),
-                "r_u": float(omega[2]),
+                **{f"omega_{j}": float(v) for j, v in enumerate(np.asarray(omega).ravel())},
                 "learned_cost": float(learned_cost),
                 "oracle_cost": float(oracle_cost),
                 "normalized_regret": float(regret),
@@ -322,7 +319,7 @@ def evaluate_multiple_vs_oracle(
         raise ValueError("labels must match the number of checkpoints.")
     labels = _make_unique_labels([str(label) for label in labels])
 
-    spec = build_msd_spec(config)
+    spec = build_spec(config)
     dataset_root = Path(dataset_dir or config["dataset"]["output_dir"]).expanduser().resolve()
     test_split = load_split(dataset_root / "test.npz")
     eval_dir = Path(output_dir or config["evaluation"]["output_dir"]).expanduser().resolve()
@@ -332,9 +329,9 @@ def evaluate_multiple_vs_oracle(
     num_episodes = min(int(config["evaluation"]["num_episodes"]), test_split.size)
     episode_indices = rng.choice(test_split.size, size=num_episodes, replace=False)
 
-    oracle_env = MassSpringDamperEnv(spec)
-    oracle = OracleLQRController(spec)
-    learned_envs = [MassSpringDamperEnv(spec) for _ in planners]
+    oracle_env = make_env(config, spec)
+    oracle = make_reference_controller(config, spec, make_env(config, spec))
+    learned_envs = [make_env(config, spec) for _ in planners]
 
     oracle_costs: list[float] = []
     oracle_rollout_times: list[float] = []
@@ -356,9 +353,7 @@ def evaluate_multiple_vs_oracle(
             "episode": float(episode_id),
             "x0_position": float(x0[0]),
             "x0_velocity": float(x0[1]),
-            "q_pos": float(omega[0]),
-            "q_vel": float(omega[1]),
-            "r_u": float(omega[2]),
+            **{f"omega_{j}": float(v) for j, v in enumerate(np.asarray(omega).ravel())},
             "oracle_cost": float(oracle_cost),
             "oracle_rollout_time_sec": float(oracle_rollout_time),
         }

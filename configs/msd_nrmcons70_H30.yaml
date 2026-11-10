@@ -1,0 +1,84 @@
+cost:
+  q_pos_range:
+  - 0.5
+  - 20.0
+  q_vel_range:
+  - 0.05
+  - 5.0
+  r_u_range:
+  - 0.01
+  - 1.0
+dataset:
+  mixture:
+    oracle_fraction: 0.1
+    pd_fraction: 0.1
+    random_fraction: 0.8
+  num_trajectories: 50000
+  oracle_action_noise_std: 0.05
+  output_dir: artifacts/datasets/msd_H30
+  pd:
+    action_noise_std: 0.1
+    kd_range:
+    - 0.2
+    - 2.5
+    kp_range:
+    - 0.5
+    - 4.0
+  random_open_loop:
+    action_std: 1.0
+    smoothing: 0.85
+  split_fractions:
+    test: 0.15
+    train: 0.7
+    val: 0.15
+environment:
+  c: 0.2
+  dt: 0.05
+  episode_len: 30
+  horizon: 30
+  initial_state:
+    position:
+    - -2.0
+    - 2.0
+    velocity:
+    - -2.0
+    - 2.0
+  k_s: 1.0
+  m: 1.0
+evaluation:
+  m_plan: 5
+  num_episodes: 100
+  num_rollout_plots: 3
+  output_dir: artifacts/eval/msd_nrmcons70_H30
+experiment:
+  device: auto
+  name: msd_nrmcons70_H30
+  seed: 7
+method:
+  variant: cost_aware
+model:
+  eps_dim: 32
+  hidden_dim: 256
+  num_blocks: 4
+training:
+  batch_size: 128
+  beta_max: 1.0
+  beta_ramp_fraction: 0.4
+  context_temperature: 2.0
+  cost_clip: 5.0
+  cost_normalization: log_zscore
+  grad_clip_norm: 1.0
+  kernel: rbf
+  kernel_temperatures:
+  - 5.0
+  lr: 0.0004
+  max_epochs: 500
+  negatives_m: 32
+  output_dir: artifacts/runs/msd_nrmcons70_H30
+  patience: 10000000
+  positives_k: 256
+  validation_batches: 8
+  weight_decay: 0.0001
+  consistency_mode: rollout
+  consistency_weight: 70.0
+  dynamics_ckpt: artifacts/dynamics/msd_H30/dynamics.pt

@@ -1,6 +1,10 @@
 """Learned model architectures."""
 
-from .diffusion import ConditionalTrajectoryDiffusionModel
-from .generator import ConditionalTrajectoryGenerator
+from .dynamics_model import ResidualDynamicsModel
+from .generator import ConditionalTrajectoryGenerator, TemporalConvTrajectoryGenerator
 
-__all__ = ["ConditionalTrajectoryGenerator", "ConditionalTrajectoryDiffusionModel"]
+__all__ = [
+    "ConditionalTrajectoryGenerator",
+    "TemporalConvTrajectoryGenerator",
+    "ResidualDynamicsModel",
+]

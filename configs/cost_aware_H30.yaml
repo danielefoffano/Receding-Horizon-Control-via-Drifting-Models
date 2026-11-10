@@ -4,7 +4,7 @@ experiment:
   device: auto
 
 method:
-  variant: cost_aware  # choices: cost_aware, cost_conditioned_prior, behavior_prior, diffusion_behavior_prior, guided_diffusion_behavior_prior
+  variant: cost_aware
 
 environment:
   m: 1.0
@@ -23,7 +23,7 @@ cost:
   r_u_range: [0.01, 1.0]
 
 dataset:
-  output_dir: artifacts/datasets/msd_default
+  output_dir: artifacts/datasets/msd_H30
   num_trajectories: 50000
   split_fractions:
     train: 0.7
@@ -54,7 +54,7 @@ training:
   negatives_m: 32
   lr: 0.0004
   weight_decay: 0.0001
-  beta_max: 0.0
+  beta_max: 1.0
   beta_ramp_fraction: 0.4
   max_epochs: 500
   patience: 10000000

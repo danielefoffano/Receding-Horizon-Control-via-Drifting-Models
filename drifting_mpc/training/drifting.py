@@ -19,12 +19,11 @@ class BatchStatistics:
 
 
 class TrajectoryDriftingObjective:
-    """Generic anti-symmetric drifting objective for all training variants.
+    """Anti-symmetric drifting objective used by Drift RHC.
 
-    Variants:
-    - cost_aware: omega-conditioned generator + exponential cost tilt in positives.
-    - cost_conditioned_prior: omega-conditioned generator, no cost tilt.
-    - behavior_prior: x0-conditioned generator, no cost tilt.
+    The generator is conditioned on (x0, omega) and the positive field is built
+    from cost-tilted neighbours of the query context; the optional dynamics
+    consistency term is added on top (see consistency_weight below).
     """
 
     def __init__(
@@ -38,6 +37,8 @@ class TrajectoryDriftingObjective:
         self.normalizer = normalizer
         self.device = torch.device(device)
         self.method: MethodSpec = get_method_spec(config)
+        from drifting_mpc.envs.registry import build_spec
+        self.spec = build_spec(config)
         train_cfg = config["training"]
         self.batch_size = int(train_cfg["batch_size"])
         self.positive_k = int(train_cfg["positives_k"])
@@ -46,8 +47,37 @@ class TrajectoryDriftingObjective:
         self.kernel_kind = str(train_cfg["kernel"]).lower()
         self.kernel_temperatures = [float(value) for value in train_cfg["kernel_temperatures"]]
         self.cost_normalization = str(train_cfg.get("cost_normalization", "zscore")).lower()
+        # Optional dynamics-consistency regulariser. Generated plans are ranked by
+        # their own predicted states, so if those states do not obey the dynamics
+        # the best-of-M selection is ranking infeasible trajectories. The model is
+        # frozen and used ONLY here at training time -- inference stays one-step
+        # and model-free.
+        self.consistency_weight = float(train_cfg.get("consistency_weight", 0.0))
+        # Scales the drift term itself, so the contribution of drifting can be
+        # ablated against a consistency-only control.
+        self.drift_weight = float(train_cfg.get("drift_weight", 1.0))
+        # "onestep" is teacher-forced and can be satisfied while the rollout still
+        # diverges on an unstable plant; "rollout" penalises the multi-step
+        # deviation, which is what the planner's cost estimate actually depends on.
+        self.consistency_mode = str(train_cfg.get("consistency_mode", "onestep")).lower()
+        self.dynamics_model = None
+        if self.consistency_weight > 0.0:
+            from drifting_mpc.models.dynamics_model import ResidualDynamicsModel
+            ck = torch.load(train_cfg["dynamics_ckpt"], map_location=self.device, weights_only=False)
+            dyn = ResidualDynamicsModel(ck["state_dim"], ck["action_dim"], ck["hidden_dim"]).to(self.device)
+            dyn.load_state_dict(ck["model_state"])
+            dyn.eval()
+            for prm in dyn.parameters():
+                prm.requires_grad_(False)
+            self.dynamics_model = dyn
         self.cost_clip = float(train_cfg.get("cost_clip", 5.0))
         self.mean, self.std = normalizer.as_torch(self.device)
+        # Per-timestep state-delta scale, so the consistency residual can be
+        # expressed in the SAME normalized units as the drift term. Without this
+        # lambda is a unit conversion rather than a trade-off weight, and its
+        # value swings by ~1000x between systems.
+        _blocks = self.std.reshape(self.spec.horizon, self.spec.action_dim + self.spec.state_dim)
+        self.state_scale = _blocks[:, self.spec.action_dim:].clamp_min(1e-6)
         self.normalized_split_zeta = (self.split.zeta - self.mean) / self.std
         self.generator = torch.Generator(device=self.device)
         self.generator.manual_seed(int(config["experiment"]["seed"]))
@@ -88,6 +118,21 @@ class TrajectoryDriftingObjective:
             mean = relabeled_cost.mean(dim=-1, keepdim=True)
             std = relabeled_cost.std(dim=-1, keepdim=True, unbiased=False).clamp_min(1e-6)
             normalized = (relabeled_cost - mean) / std
+        elif mode == "log_zscore":
+            # Heavy-tailed costs compress the informative low-cost region to
+            # near-zero width under a plain z-score, which flattens the tilt.
+            # Taking logs first restores resolution among good trajectories.
+            log_cost = torch.log(relabeled_cost.clamp_min(1e-8))
+            mean = log_cost.mean(dim=-1, keepdim=True)
+            std = log_cost.std(dim=-1, keepdim=True, unbiased=False).clamp_min(1e-6)
+            normalized = (log_cost - mean) / std
+        elif mode == "rank":
+            # Fully scale-free: only the ordering of costs within the pool
+            # matters, so beta means the same thing on any cost scale.
+            n = relabeled_cost.shape[-1]
+            ranks = relabeled_cost.argsort(dim=-1).argsort(dim=-1).to(relabeled_cost.dtype)
+            uniform = ranks / max(n - 1, 1)
+            normalized = (uniform - 0.5) * (12.0 ** 0.5)  # zero mean, unit variance
         elif mode == "minmax":
             min_cost = relabeled_cost.min(dim=-1, keepdim=True).values
             max_cost = relabeled_cost.max(dim=-1, keepdim=True).values
@@ -154,7 +199,33 @@ class TrajectoryDriftingObjective:
         negative_field = negative_mean - z_generated
 
         target = (z_generated + positive_field - negative_field).detach()
-        loss = 0.5 * (z_generated - target).square().sum(dim=-1).mean()
+        loss = self.drift_weight * 0.5 * (z_generated - target).square().sum(dim=-1).mean()
+
+        consistency_value = 0.0
+        if self.dynamics_model is not None:
+            from drifting_mpc.data.trajectory import decode_trajectory_torch
+            states_gen, actions_gen = decode_trajectory_torch(
+                expanded_x0,
+                zeta_generated.reshape(batch_size * self.negative_m, -1),
+                horizon=self.spec.horizon,
+                state_dim=self.spec.state_dim,
+                action_dim=self.spec.action_dim,
+            )
+            if self.consistency_mode == "rollout":
+                rolled = [states_gen[:, 0]]
+                current = states_gen[:, 0]
+                for t in range(actions_gen.shape[1]):
+                    current = self.dynamics_model(current, actions_gen[:, t])
+                    rolled.append(current)
+                rolled = torch.stack(rolled, dim=1)
+                resid = (states_gen[:, 1:] - rolled[:, 1:]) / self.state_scale
+                consistency = resid.square().sum(dim=(-1, -2)).mean()
+            else:
+                predicted_next = self.dynamics_model(states_gen[:, :-1], actions_gen)
+                resid = (states_gen[:, 1:] - predicted_next) / self.state_scale
+                consistency = resid.square().sum(dim=(-1, -2)).mean()
+            loss = loss + self.consistency_weight * consistency
+            consistency_value = float(consistency.detach().cpu())
         stats = BatchStatistics(
             loss=float(loss.detach().cpu()),
             positive_norm=float(positive_field.norm(dim=-1).mean().detach().cpu()),
@@ -163,9 +234,6 @@ class TrajectoryDriftingObjective:
         )
         return loss, stats
 
-
-# Backwards-compatible alias.
-AlternativeADriftingObjective = TrajectoryDriftingObjective
 
 
 def beta_schedule(global_step: int, total_steps: int, beta_max: float, ramp_fraction: float) -> float:

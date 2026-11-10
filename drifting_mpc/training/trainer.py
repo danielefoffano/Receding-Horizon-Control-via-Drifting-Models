@@ -10,7 +10,7 @@ from tqdm.auto import tqdm
 
 from drifting_mpc.config import dump_config
 from drifting_mpc.data.dataset import TrajectoryNormalizer, load_split
-from drifting_mpc.envs.mass_spring_damper import build_msd_spec
+from drifting_mpc.envs.registry import build_spec
 from drifting_mpc.methods import get_method_spec
 from drifting_mpc.models.generator import ConditionalTrajectoryGenerator
 from drifting_mpc.training.drifting import TrajectoryDriftingObjective, beta_schedule
@@ -40,11 +40,22 @@ def _select_device(config: dict) -> torch.device:
 def _build_model(config: dict, spec, device: torch.device) -> ConditionalTrajectoryGenerator:
     model_cfg = config["model"]
     method = get_method_spec(config)
+    omega_dim = (spec.state_dim + spec.action_dim) if method.condition_on_omega else 0
+    arch = str(model_cfg.get("architecture", "mlp")).lower()
+    if arch in ("conv", "temporal_conv"):
+        from drifting_mpc.models.generator import TemporalConvTrajectoryGenerator
+        model = TemporalConvTrajectoryGenerator(
+            horizon=spec.horizon, state_dim=spec.state_dim, action_dim=spec.action_dim,
+            omega_dim=omega_dim, eps_dim=int(model_cfg["eps_dim"]),
+            hidden_dim=int(model_cfg.get("conv_hidden_dim", 96)),
+            num_blocks=int(model_cfg["num_blocks"]),
+        )
+        return model.to(device)
     model = ConditionalTrajectoryGenerator(
         horizon=spec.horizon,
         state_dim=spec.state_dim,
         action_dim=spec.action_dim,
-        omega_dim=3 if method.condition_on_omega else 0,
+        omega_dim=omega_dim,
         eps_dim=int(model_cfg["eps_dim"]),
         hidden_dim=int(model_cfg["hidden_dim"]),
         num_blocks=int(model_cfg["num_blocks"]),
@@ -83,7 +94,7 @@ def train_drifting_model(
     dataset_dir: str | Path | None = None,
     output_dir: str | Path | None = None,
 ) -> TrainingArtifacts:
-    spec = build_msd_spec(config)
+    spec = build_spec(config)
     device = _select_device(config)
     method = get_method_spec(config)
 
@@ -204,13 +215,19 @@ def train_drifting_model(
                 last_checkpoint_path,
             )
 
+            # Model selection: the validation metric here is the drift-field
+            # fixed-point residual ||V_drift||^2. It is not an error measure --
+            # it grows as the generator moves onto the tilted target, so taking
+            # its argmin returns a near-untrained model (epoch ~4 of 500, with
+            # beta still ~0). The final iterate is the model of record, so
+            # best.pt is kept identical to last.pt.
+            torch.save(
+                {**checkpoint_payload, "checkpoint_type": "final", "val_loss": float(val_loss)},
+                checkpoint_path,
+            )
             if val_loss < best_val:
                 best_val = val_loss
                 epochs_without_improvement = 0
-                torch.save(
-                    {**checkpoint_payload, "checkpoint_type": "best", "best_val_loss": best_val},
-                    checkpoint_path,
-                )
             else:
                 epochs_without_improvement += 1
 
@@ -232,20 +249,8 @@ def train_drifting_model(
     )
 
 
-# Backwards-compatible alias.
-train_alternative_a = train_drifting_model
-
-
 def train_model(config: dict, dataset_dir: str | Path | None = None, output_dir: str | Path | None = None) -> TrainingArtifacts:
     method = get_method_spec(config)
-    if method.model_family == "drifting":
-        return train_drifting_model(config, dataset_dir=dataset_dir, output_dir=output_dir)
-    if method.model_family == "diffusion":
-        from drifting_mpc.training.diffusion_trainer import train_diffusion_model
-
-        return train_diffusion_model(config, dataset_dir=dataset_dir, output_dir=output_dir)
-    raise ValueError(f"Unsupported model family: {method.model_family}")
-
-
-# Backwards-compatible alias for generic entry points.
-train_model_from_config = train_model
+    if method.model_family != "drifting":
+        raise ValueError(f"Unsupported model family: {method.model_family}")
+    return train_drifting_model(config, dataset_dir=dataset_dir, output_dir=output_dir)

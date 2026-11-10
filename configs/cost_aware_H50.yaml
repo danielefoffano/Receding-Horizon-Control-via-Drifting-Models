@@ -4,7 +4,7 @@ experiment:
   device: auto
 
 method:
-  variant: cost_aware  # choices: cost_aware, cost_conditioned_prior, behavior_prior, diffusion_behavior_prior, guided_diffusion_behavior_prior
+  variant: cost_aware
 
 environment:
   m: 1.0
@@ -23,7 +23,7 @@ cost:
   r_u_range: [0.01, 1.0]
 
 dataset:
-  output_dir: artifacts/datasets/H50_dataset
+  output_dir: artifacts/datasets/msd_H50
   num_trajectories: 50000
   split_fractions:
     train: 0.7
@@ -48,7 +48,7 @@ model:
   num_blocks: 4
 
 training:
-  output_dir: artifacts/runs/cost_aware_H50_multitemp
+  output_dir: artifacts/runs/cost_aware_H50
   batch_size: 128
   positives_k: 256
   negatives_m: 32
@@ -67,7 +67,7 @@ training:
   cost_clip: 5.0
 
 evaluation:
-  output_dir: artifacts/eval/cost_aware_H50_multitemp
+  output_dir: artifacts/eval/cost_aware_H50
   num_episodes: 100
   m_plan: 5
   num_rollout_plots: 3
